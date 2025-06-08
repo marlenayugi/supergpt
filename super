@@ -1,0 +1,164 @@
+import React, { useState, useEffect, useRef, useContext } from 'react';
+import { useParams } from 'react-router-dom';
+import { AuthContext } from '../../contexts/AuthContext';
+import { ChatContext } from '../../contexts/ChatContext';
+import MessageList from './MessageList';
+import MessageInput from './MessageInput';
+import TypingIndicator from './TypingIndicator';
+import ChatModes from './ChatModes';
+import QuickActions from './QuickActions';
+import './ChatInterface.css';
+
+const ChatInterface = ({ socket }) => {
+  const { chatId } = useParams();
+  const { user } = useContext(AuthContext);
+  const { currentChat, messages, addMessage, setCurrentChat } = useContext(ChatContext);
+  
+  const [isTyping, setIsTyping] = useState(false);
+  const [currentMode, setCurrentMode] = useState('general');
+  const [isAITyping, setIsAITyping] = useState(false);
+  const messagesEndRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
+
+  useEffect(() => {
+    if (socket && chatId) {
+      // Unirse al chat
+      socket.emit('join-chat', chatId);
+      
+      // Escuchar nuevos mensajes
+      socket.on('new-message', (message) => {
+        addMessage(message);
+        setIsAITyping(false);
+      });
+
+      // Escuchar indicador de escritura
+      socket.on('user-typing', ({ userId, typing }) => {
+        if (userId !== user.id) {
+          setIsTyping(typing);
+        }
+      });
+
+      // Escuchar cuando la IA está procesando
+      socket.on('ai-processing', () => {
+        setIsAITyping(true);
+      });
+
+      return () => {
+        socket.off('new-message');
+        socket.off('user-typing');
+        socket.off('ai-processing');
+      };
+    }
+  }, [socket, chatId, addMessage, user.id]);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const handleSendMessage = (messageData) => {
+    if (!socket || !messageData.content.trim()) return;
+
+    const messageToSend = {
+      chatId: chatId || 'default',
+      message: messageData.content,
+      type: messageData.type || currentMode,
+      attachments: messageData.attachments || []
+    };
+
+    // Emitir mensaje al servidor
+    socket.emit('send-message', messageToSend);
+
+    // Indicar que la IA está procesando
+    setIsAITyping(true);
+  };
+
+  const handleTyping = (typing) => {
+    if (!socket || !chatId) return;
+
+    socket.emit('typing', {
+      chatId: chatId || 'default',
+      typing
+    });
+
+    // Limpiar timeout anterior
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+
+    // Si está escribiendo, configurar timeout para parar
+    if (typing) {
+      typingTimeoutRef.current = setTimeout(() => {
+        socket.emit('typing', {
+          chatId: chatId || 'default',
+          typing: false
+        });
+      }, 2000);
+    }
+  };
+
+  const handleModeChange = (mode) => {
+    setCurrentMode(mode);
+  };
+
+  const handleQuickAction = (action) => {
+    const quickMessages = {
+      explain: '¿Podrías explicarme sobre...',
+      search: 'Busca información sobre...',
+      creative: 'Ayúdame con algo creativo...',
+      translate: 'Traduce esto...',
+      summarize: 'Resume este texto...'
+    };
+
+    if (quickMessages[action]) {
+      handleSendMessage({
+        content: quickMessages[action],
+        type: action
+      });
+    }
+  };
+
+  return (
+    <div className="chat-interface">
+      <div className="chat-header">
+        <div className="chat-title">
+          <h2>
+            {currentChat?.name || 'Conversación con IA'}
+            <span className="chat-mode-indicator">{currentMode}</span>
+          </h2>
+        </div>
+        
+        <ChatModes 
+          currentMode={currentMode}
+          onModeChange={handleModeChange}
+        />
+      </div>
+
+      <div className="chat-body">
+        <MessageList 
+          messages={messages}
+          currentUser={user}
+          isAITyping={isAITyping}
+        />
+        
+        {(isTyping || isAITyping) && (
+          <TypingIndicator 
+            isAI={isAITyping}
+            message={isAITyping ? 'IA está pensando...' : 'Alguien está escribiendo...'}
+          />
+        )}
+        
+        <div ref={messagesEndRef} />
+      </div>
+
+      <div className="chat-footer">
+        <QuickActions 
+          onAction={handleQuickAction}
+          currentMode={currentMode}
+        />
+        
+        <MessageInput
+          onSendMessage={handleSendMessage
